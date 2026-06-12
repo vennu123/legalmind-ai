@@ -1,0 +1,44 @@
+# Python
+venv/
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Node / frontend build
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+
+# Environment and secrets
+.env
+backend/.env
+frontend/.env
+.env.local
+.env.*.local
+firebase-credentials.json
+*credentials*.json
+*service-account*.json
+*.pem
+*.key
+
+# Local generated state
+.firebase/
+storage/
+backend/storage/
+*.log
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+PHASE_0_FOUNDATION.md
+PHASE_7_DEPLOYMENT.md
+PHASE_8_GUARDRAILS.md
+PROJECT_GUIDE.md

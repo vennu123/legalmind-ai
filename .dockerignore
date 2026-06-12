@@ -1,0 +1,13 @@
+.git
+.codex
+.agents
+backend/venv
+backend/.env
+backend/firebase-credentials.json
+backend/__pycache__
+backend/**/__pycache__
+backend/**/*.pyc
+frontend/node_modules
+frontend/dist
+frontend/.env
+.DS_Store
