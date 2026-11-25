@@ -1,0 +1,6 @@
+# Lightweight dependencies for CI unit tests and linting.
+# The tests cover pure logic (guardrails, chunking), so they do NOT need torch,
+# langgraph, qdrant or any API keys. Keeping this small makes CI fast (seconds, not minutes).
+pytest>=8,<9
+ruff>=0.6,<1
+pydantic>=2.7,<3

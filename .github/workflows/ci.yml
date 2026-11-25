@@ -1,0 +1,108 @@
+# ============================================================================
+# CI  (Continuous Integration)
+# Runs automatically on every pull request and on every push to main.
+# Goal: catch broken code BEFORE it is merged or deployed.
+#
+# Reading guide:
+#   on:          WHEN the workflow starts (the trigger)
+#   jobs:        independent groups of work; each runs on its own fresh machine
+#   runs-on:     the type of machine GitHub gives us (a "runner")
+#   steps:       the commands/actions a job runs, in order
+#   uses:        run a ready-made action from the marketplace
+#   run:         run a shell command
+# ============================================================================
+name: CI
+
+on:
+  pull_request:            # every pull request
+  push:
+    branches: [main]       # and every merge/push to main
+
+# If you push again while a run is in progress, cancel the old run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: this workflow may only READ the repository.
+permissions:
+  contents: read
+
+jobs:
+  # --------------------------------------------------------------------------
+  # JOB 1: lint + unit tests for the Python backend (fast: about a minute)
+  # --------------------------------------------------------------------------
+  backend-tests:
+    name: Backend lint and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend      # run every command inside backend/
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11            # same version as the Dockerfile
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip                        # reuse downloaded packages between runs
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install test dependencies
+        run: pip install -r requirements-dev.txt
+
+      # Lint: catches syntax errors and undefined names only (serious bugs).
+      # E9 = syntax/runtime errors, F63/F7 = invalid constructs, F82 = undefined names.
+      - name: Lint (serious errors only)
+        run: ruff check . --select E9,F63,F7,F82
+
+      - name: Run unit tests
+        run: pytest -v
+
+  # --------------------------------------------------------------------------
+  # JOB 2: make sure the frontend still builds
+  # --------------------------------------------------------------------------
+  frontend-build:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install packages (exact versions from package-lock.json)
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+  # --------------------------------------------------------------------------
+  # JOB 3: make sure the Docker image still builds (slowest job)
+  # This is the same Dockerfile Cloud Run uses, so a failure here would
+  # have been a failed deployment. We build but do NOT push anywhere.
+  # --------------------------------------------------------------------------
+  docker-build:
+    name: Docker image build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          push: false
+          cache-from: type=gha              # reuse layers from earlier runs
+          cache-to: type=gha,mode=max
