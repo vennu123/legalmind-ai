@@ -1,5 +1,6 @@
 # ============================================================================
 # CD  (Continuous Delivery)  -  REFERENCE WORKFLOW
+# (A version of the same flow that runs for free, without a cloud account, is cd.yml)
 #
 # This pipeline builds the backend image ONCE, deploys it to STAGING, smoke
 # tests it, then promotes the SAME image to PRODUCTION (after approval).

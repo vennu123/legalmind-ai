@@ -1,0 +1,42 @@
+# ============================================================================
+# ROLLBACK  -  manual
+#
+# Every image is tagged with its Git commit, and old images are kept. So a
+# rollback is simply: point the "production" tag back at an older commit's
+# image. No rebuild, no code change, takes seconds.
+#
+# Run it from Actions -> Rollback -> "Run workflow" and paste a commit SHA
+# of a previous good deployment. It uses the same "production" Environment,
+# so it also needs the approval click.
+# ============================================================================
+name: Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Full commit SHA of the previous good version to restore"
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Point production back at the chosen version
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/legalmind-api"
+          docker buildx imagetools create \
+            --tag "$IMAGE:production" \
+            "$IMAGE:${{ inputs.sha }}"
+          echo "Production now points at ${{ inputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
