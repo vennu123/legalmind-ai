@@ -1,0 +1,145 @@
+# ============================================================================
+# CD  (Continuous Delivery)  -  REFERENCE WORKFLOW
+#
+# This pipeline builds the backend image ONCE, deploys it to STAGING, smoke
+# tests it, then promotes the SAME image to PRODUCTION (after approval).
+#
+# It only runs when you click "Run workflow" in the GitHub Actions tab
+# (workflow_dispatch). It is NOT triggered by pushes, because it needs a live
+# Google Cloud project. To make it automatic later, replace the trigger with:
+#     on:
+#       push:
+#         branches: [main]
+#
+# One-time Google Cloud setup it expects (all done outside this file):
+#   1. Artifact Registry repo           (stores the images)
+#   2. A deploy service account         (roles: Cloud Run Admin, Artifact Registry
+#                                        Writer, Service Account User)
+#   3. Workload Identity Federation     (lets GitHub log in WITHOUT a key file)
+#   4. Two Cloud Run services           (legalmind-api-staging, legalmind-api)
+#   5. Secrets in Secret Manager        (e.g. gemini-api-key)
+#   6. GitHub repo Variables/Secrets    (names used below) and an
+#      Environment called "production" with required reviewers (approval gate)
+# ============================================================================
+name: Deploy (reference, manual)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write          # needed so GitHub can request a short-lived Google token (WIF)
+
+env:
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  REGION: australia-southeast1
+  REPOSITORY: legalmind                       # Artifact Registry repo name
+  IMAGE: legalmind-api
+  # Tag the image with the Git commit, so every deployment is traceable
+  # and a rollback means "deploy that older commit's image".
+  IMAGE_URI: australia-southeast1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/legalmind/legalmind-api:${{ github.sha }}
+
+jobs:
+  # --------------------------------------------------------------------------
+  # 1. BUILD: create the image once and push it to Artifact Registry
+  # --------------------------------------------------------------------------
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Log in to Google Cloud with Workload Identity Federation: no password,
+      # no JSON key file. Google trusts "this repo's workflow" and hands out a
+      # short-lived token.
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Let Docker push to Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          push: true
+          tags: ${{ env.IMAGE_URI }}
+
+  # --------------------------------------------------------------------------
+  # 2. STAGING: deploy the image to the staging service and smoke test it
+  # --------------------------------------------------------------------------
+  deploy-staging:
+    needs: build                       # runs only after build succeeded
+    runs-on: ubuntu-latest
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Deploy to staging Cloud Run
+        id: deploy
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: legalmind-api-staging
+          region: ${{ env.REGION }}
+          image: ${{ env.IMAGE_URI }}              # deploy the image we just built
+          env_vars: ENVIRONMENT=staging
+          # Secrets come from Secret Manager, not from the workflow or the code.
+          secrets: GEMINI_API_KEY=gemini-api-key:latest
+
+      # SMOKE TEST: "switch it on and check it doesn't catch fire".
+      # --fail makes curl exit non-zero on an HTTP error, which fails the job
+      # and stops the pipeline before production.
+      - name: Smoke test /health
+        run: |
+          curl --fail --silent --show-error \
+               --retry 5 --retry-delay 5 --retry-connrefused \
+               "${{ steps.deploy.outputs.url }}/health"
+
+  # --------------------------------------------------------------------------
+  # 3. PRODUCTION: promote the SAME image after a human approves
+  # --------------------------------------------------------------------------
+  deploy-production:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    # An "environment" with required reviewers makes GitHub pause here until
+    # someone clicks Approve. This is the manual approval gate.
+    environment: production
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Deploy to production Cloud Run
+        id: deploy
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: legalmind-api
+          region: ${{ env.REGION }}
+          image: ${{ env.IMAGE_URI }}              # exact image that passed staging
+          env_vars: ENVIRONMENT=production
+          secrets: GEMINI_API_KEY=gemini-api-key:latest
+
+      - name: Smoke test /health
+        run: |
+          curl --fail --silent --show-error \
+               --retry 5 --retry-delay 5 --retry-connrefused \
+               "${{ steps.deploy.outputs.url }}/health"
+
+# ----------------------------------------------------------------------------
+# ROLLBACK (not automated here; it is one command, because Cloud Run keeps
+# every previous revision):
+#
+#   gcloud run revisions list --service legalmind-api --region australia-southeast1
+#   gcloud run services update-traffic legalmind-api \
+#       --region australia-southeast1 --to-revisions=<PREVIOUS_REVISION>=100
+#
+# Gradual rollout (canary), if you prefer: deploy with --no-traffic, then
+#   gcloud run services update-traffic legalmind-api --to-latest=10   # 10% of users
+# watch error rates, then move to 100.
+# ----------------------------------------------------------------------------
